@@ -1492,6 +1492,7 @@ F4 - 手动完成
         labels = {
             "riot_api": "Riot API",
             "vision": "视觉识别",
+            "dual": "双通道",
         }
         return labels.get(self.active_auto_backend, "自动监控")
 
@@ -1500,6 +1501,7 @@ F4 - 手动完成
         label_map = {
             "riot_api": ("BACKEND   RIOT API", self.colors["accent"]),
             "vision": ("BACKEND   VISION", self.colors["orange"]),
+            "dual": ("BACKEND   RIOT + VISION", self.colors["gold_light"]),
             "unavailable": ("BACKEND   OFFLINE", self.colors["red"]),
             None: ("BACKEND   OFF", self.colors["text_secondary"]),
         }
@@ -1556,29 +1558,17 @@ F4 - 手动完成
                 self.apply_resolution()
 
             result = self.auto_monitor.start()
-            self.active_auto_backend = None if result.backend == "unavailable" else result.backend
+            self.active_auto_backend = result.backend
 
-            if result.backend == "unavailable":
-                self.vision_enabled.set(False)
-                self.vision_status.config(
-                    text=f"{result.status_text} {self.format_auto_backend_reason(result.fallback_reason)}",
-                    fg=self.colors["red"]
-                )
-                self.update_backend_badge("unavailable")
-                if not self.is_running:
-                    self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
-                    self.status_dot.itemconfig(1, fill=self.colors["border"])
+            if result.backend == "dual" and result.fallback_reason:
+                status_text = f"{result.status_text} Riot API:{self.format_auto_backend_reason(result.fallback_reason)}"
+                status_color = "orange"
+            else:
+                status_text = result.status_text
+                status_color = "blue" if result.backend in {"riot_api", "dual"} else "orange"
 
-                messagebox.showwarning(
-                    "自动监控不可用",
-                    self.format_auto_backend_reason(result.fallback_reason),
-                    parent=self.root
-                )
-                return
-
-            status_color = "blue" if result.backend == "riot_api" else "orange"
             self.update_backend_badge(result.backend)
-            self.vision_status.config(text=result.status_text, fg=self.colors[status_color])
+            self.vision_status.config(text=status_text, fg=self.colors[status_color])
             self.status_label.config(
                 text=f"{self.get_auto_backend_label()}监控中...",
                 fg=self.colors["blue"]

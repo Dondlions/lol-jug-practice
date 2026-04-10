@@ -28,34 +28,28 @@ class AutoMonitorCoordinator:
         self.active_backend = None
 
     def start(self) -> AutoMonitorResult:
-        available, reason = self.live_client_timer.probe(timeout_seconds=self.probe_timeout)
-        if available:
-            self.live_client_timer.start_monitoring()
-            self.active_backend = "riot_api"
-            return AutoMonitorResult(
-                backend="riot_api",
-                status_text="[Riot API 监控中]",
-            )
+        available, reason = self.live_client_timer.probe(timeout_seconds=0)
+        self.live_client_timer.start_monitoring()
 
         if self.vision_timer is not None:
             self.vision_timer.start_monitoring()
-            self.active_backend = "vision"
+            self.active_backend = "dual"
             return AutoMonitorResult(
-                backend="vision",
-                status_text="[Riot API 不可用，已切换视觉识别]",
-                fallback_reason=reason,
+                backend="dual",
+                status_text="[双通道监控中]",
+                fallback_reason=None if available else reason,
             )
 
-        self.active_backend = None
+        self.active_backend = "riot_api"
         return AutoMonitorResult(
-            backend="unavailable",
-            status_text="[自动监控不可用]",
-            fallback_reason=reason,
+            backend="riot_api",
+            status_text="[Riot API 监控中]",
+            fallback_reason=None if available else reason,
         )
 
     def stop(self):
-        if self.active_backend == "riot_api":
+        if self.active_backend in {"riot_api", "dual"}:
             self.live_client_timer.stop_monitoring()
-        elif self.active_backend == "vision" and self.vision_timer is not None:
+        if self.active_backend in {"vision", "dual"} and self.vision_timer is not None:
             self.vision_timer.stop_monitoring()
         self.active_backend = None
