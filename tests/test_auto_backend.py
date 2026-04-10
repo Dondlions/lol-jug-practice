@@ -54,3 +54,15 @@ def test_reports_unavailable_when_no_backend_can_start():
     assert result.backend == "unavailable"
     assert result.status_text == "[自动监控不可用]"
     assert result.fallback_reason == "ssl_error"
+
+
+def test_stop_stops_active_backend():
+    live = FakeTimer(available=True)
+    vision = FakeTimer()
+    coordinator = AutoMonitorCoordinator(live_client_timer=live, vision_timer=vision)
+
+    coordinator.start()
+    coordinator.stop()
+
+    assert live.stopped is True
+    assert vision.stopped is False

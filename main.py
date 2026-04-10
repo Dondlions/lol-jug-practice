@@ -290,24 +290,28 @@ class JungleTimer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("LOL Jungle Timer Pro")
-        self.root.geometry("1100x850")
-        self.root.minsize(1000, 750)
-        self.root.configure(bg="#070C14")
+        self.root.geometry("560x250+40+40")
+        self.root.minsize(520, 220)
+        self.root.configure(bg="#05070A")
+        self.configure_window()
 
         # 主题色
         self.colors = {
-            "bg": "#070C14",
-            "card": "#111A28",
-            "card_hover": "#1A2738",
-            "gold": "#54D2FF",
-            "gold_light": "#C7F5FF",
-            "blue": "#00CFFF",
-            "green": "#3EE89B",
-            "red": "#FF5B7B",
-            "orange": "#FFB45A",
-            "text": "#E7F1FF",
-            "text_secondary": "#84A0BE",
-            "border": "#2A3D55"
+            "bg": "#05070A",
+            "card": "#0B0E12",
+            "card_hover": "#12171D",
+            "panel": "#171C24",
+            "gold": "#F6F7FB",
+            "gold_light": "#FFFFFF",
+            "blue": "#AEB9C7",
+            "green": "#43D17E",
+            "red": "#FF304F",
+            "orange": "#FFB454",
+            "text": "#F4F7FB",
+            "text_secondary": "#95A1B1",
+            "border": "#2B313B",
+            "accent": "#FF304F",
+            "accent_dark": "#701828"
         }
 
         # 计时器状态
@@ -317,6 +321,9 @@ class JungleTimer:
         self.current_route = "red_full"
         self.route_options = {route["name"]: key for key, route in self.ROUTES.items()}
         self.camp_times = {}
+        self.details_visible = False
+        self.hud_geometry = "560x250+40+40"
+        self.expanded_geometry = "560x760+40+40"
         
         # 历史记录
         self.history_file = os.path.join(os.path.dirname(__file__), "history.json")
@@ -358,90 +365,113 @@ class JungleTimer:
                            foreground=self.colors["blue"],
                            font=("Segoe UI", 11))
 
+    def configure_window(self):
+        """配置 HUD 窗口属性"""
+        try:
+            self.root.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        try:
+            self.root.attributes("-alpha", 0.9)
+        except tk.TclError:
+            pass
+
+    def remember_geometry(self):
+        """记录当前窗口位置，用于 HUD/展开模式切换"""
+        self.root.update_idletasks()
+        geometry = self.root.geometry()
+        if "+" in geometry:
+            size, x, y = geometry.split("+", 2)
+            if self.details_visible:
+                self.expanded_geometry = f"{self.expanded_geometry.split('+', 1)[0]}+{x}+{y}"
+            else:
+                self.hud_geometry = f"{self.hud_geometry.split('+', 1)[0]}+{x}+{y}"
+
+    def apply_mode_geometry(self):
+        """应用当前 HUD 模式的窗口尺寸"""
+        geometry = self.expanded_geometry if self.details_visible else self.hud_geometry
+        self.root.geometry(geometry)
+
+    def bind_drag_region(self, widget):
+        """让 HUD 区域支持拖动窗口"""
+        widget.bind("<ButtonPress-1>", self.start_drag)
+        widget.bind("<B1-Motion>", self.drag_window)
+
+    def start_drag(self, event):
+        """开始拖动 HUD 窗口"""
+        self._drag_start_x = event.x_root
+        self._drag_start_y = event.y_root
+        self._drag_window_x = self.root.winfo_x()
+        self._drag_window_y = self.root.winfo_y()
+
+    def drag_window(self, event):
+        """拖动 HUD 窗口"""
+        offset_x = event.x_root - self._drag_start_x
+        offset_y = event.y_root - self._drag_start_y
+        self.root.geometry(f"+{self._drag_window_x + offset_x}+{self._drag_window_y + offset_y}")
+
     def create_widgets(self):
         """创建界面组件"""
-        # 主容器 - 使用Frame实现层次感
-        main_frame = tk.Frame(self.root, bg=self.colors["bg"])
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=26, pady=22)
+        self.main_frame = tk.Frame(self.root, bg=self.colors["bg"])
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
 
-        # ========== 顶部标题区 ==========
-        self.create_header(main_frame)
-
-        # ========== 计时器卡片 ==========
-        self.create_timer_section(main_frame)
-
-        # ========== 控制按钮区 ==========
-        self.create_control_section(main_frame)
-
-        # ========== 野怪营地卡片 ==========
-        self.create_camps_section(main_frame)
-
-        # ========== 底部信息区 ==========
-        self.create_footer_section(main_frame)
+        self.create_header(self.main_frame)
+        self.create_timer_section(self.main_frame)
+        self.create_hud_controls(self.main_frame)
+        self.create_detail_panel(self.main_frame)
+        self.apply_mode_geometry()
 
     def create_header(self, parent):
-        """创建顶部标题"""
+        """创建 HUD 顶部信息条"""
         header = tk.Frame(
             parent,
-            bg=self.colors["card"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
+            bg=self.colors["panel"],
             bd=0
         )
-        header.pack(fill=tk.X, pady=(0, 16))
+        header.pack(fill=tk.X, pady=(0, 10))
+        self.bind_drag_region(header)
 
-        header_inner = tk.Frame(header, bg=self.colors["card"])
-        header_inner.pack(fill=tk.X, padx=22, pady=16)
+        header_inner = tk.Frame(header, bg=self.colors["panel"])
+        header_inner.pack(fill=tk.X, padx=16, pady=12)
+        self.bind_drag_region(header_inner)
 
-        # 左侧：Logo和标题
-        title_frame = tk.Frame(header_inner, bg=self.colors["card"])
+        title_frame = tk.Frame(header_inner, bg=self.colors["panel"])
         title_frame.pack(side=tk.LEFT)
+        self.bind_drag_region(title_frame)
 
-        # Logo图标
         logo_label = tk.Label(
             title_frame,
-            text="⚔️",
-            font=("Segoe UI Emoji", 36),
-            bg=self.colors["card"],
-            fg=self.colors["blue"]
+            text="RACE HUD",
+            font=("Arial", 11, "bold"),
+            bg=self.colors["panel"],
+            fg=self.colors["accent"]
         )
-        logo_label.pack(side=tk.LEFT, padx=(0, 15))
+        logo_label.pack(anchor="w")
+        self.bind_drag_region(logo_label)
 
-        # 标题文字
-        text_frame = tk.Frame(title_frame, bg=self.colors["card"])
-        text_frame.pack(side=tk.LEFT)
-
-        tk.Label(
-            text_frame,
-            text="JUNGLE TIMER",
-            font=("Segoe UI", 24, "bold"),
-            bg=self.colors["card"],
-            fg=self.colors["gold_light"]
-        ).pack(anchor="w")
-
-        tk.Label(
-            text_frame,
-            text="League Practice Assistant",
-            font=("Segoe UI", 11),
-            bg=self.colors["card"],
+        self.header_meta = tk.Label(
+            title_frame,
+            text="LEAGUE PRACTICE OVERLAY",
+            font=("Arial", 9),
+            bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
-        ).pack(anchor="w")
+        )
+        self.header_meta.pack(anchor="w", pady=(2, 0))
+        self.bind_drag_region(self.header_meta)
 
-        # 右侧：路线选择
         route_frame = tk.Frame(
             header_inner,
             bg=self.colors["card_hover"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
-            padx=12,
-            pady=8
+            padx=10,
+            pady=6
         )
         route_frame.pack(side=tk.RIGHT)
 
         tk.Label(
             route_frame,
             text="打野路线",
-            font=("Segoe UI", 10, "bold"),
+            font=("Arial", 8, "bold"),
             bg=self.colors["card_hover"],
             fg=self.colors["text_secondary"]
         ).pack(anchor="e")
@@ -452,133 +482,137 @@ class JungleTimer:
             textvariable=self.route_var,
             values=list(self.route_options.keys()),
             state="readonly",
-            width=15,
-            font=("Segoe UI", 11),
+            width=14,
+            font=("Arial", 10),
             style="Game.TCombobox"
         )
-        route_menu.pack(pady=(5, 0))
+        route_menu.pack(pady=(4, 0))
         route_menu.bind("<<ComboboxSelected>>", self.on_route_change)
 
     def create_timer_section(self, parent):
-        """创建计时器区域"""
+        """创建 HUD 计时器区域"""
         timer_card = tk.Frame(
             parent,
             bg=self.colors["card"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
             bd=0
         )
-        timer_card.pack(fill=tk.X, pady=12)
+        timer_card.pack(fill=tk.X, pady=(0, 10))
 
         inner = tk.Frame(timer_card, bg=self.colors["card"])
-        inner.pack(fill=tk.X, padx=40, pady=24)
+        inner.pack(fill=tk.X, padx=18, pady=16)
 
         self.route_badge = tk.Label(
             inner,
             text=f"ROUTE   {self.ROUTES[self.current_route]['name']}",
-            font=("Consolas", 11, "bold"),
+            font=("Arial", 9, "bold"),
             bg=self.colors["card"],
-            fg=self.colors["blue"]
+            fg=self.colors["text_secondary"]
         )
-        self.route_badge.pack()
+        self.route_badge.pack(anchor="w")
 
-        # 大计时器显示
         self.timer_label = tk.Label(
             inner,
             text="00:00.00",
-            font=("Consolas", 74, "bold"),
+            font=("Arial", 42, "bold"),
             bg=self.colors["card"],
-            fg=self.colors["gold"]
+            fg=self.colors["gold_light"]
         )
-        self.timer_label.pack(pady=(6, 0))
+        self.timer_label.pack(anchor="w", pady=(2, 8))
 
-        # 状态指示器胶囊
+        info_row = tk.Frame(inner, bg=self.colors["card"])
+        info_row.pack(fill=tk.X)
+
         status_frame = tk.Frame(
-            inner,
-            bg=self.colors["card_hover"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
-            padx=14,
-            pady=8
+            info_row,
+            bg=self.colors["panel"],
+            padx=12,
+            pady=7
         )
-        status_frame.pack(pady=(12, 0))
+        status_frame.pack(side=tk.LEFT)
 
-        self.status_dot = tk.Canvas(status_frame, width=10, height=10,
-                                   bg=self.colors["card_hover"], highlightthickness=0)
+        self.status_dot = tk.Canvas(
+            status_frame,
+            width=10,
+            height=10,
+            bg=self.colors["panel"],
+            highlightthickness=0
+        )
         self.status_dot.pack(side=tk.LEFT)
         self.status_dot.create_oval(0, 0, 10, 10, fill=self.colors["border"], outline="")
 
         self.status_label = tk.Label(
             status_frame,
             text="准备就绪",
-            font=("Segoe UI", 12, "bold"),
-            bg=self.colors["card_hover"],
+            font=("Arial", 10, "bold"),
+            bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
         )
         self.status_label.pack(side=tk.LEFT, padx=(10, 0))
 
-        # 自动监控选项
+        self.backend_label = tk.Label(
+            info_row,
+            text="BACKEND   OFF",
+            font=("Arial", 9, "bold"),
+            bg=self.colors["card"],
+            fg=self.colors["accent"]
+        )
+        self.backend_label.pack(side=tk.RIGHT)
+
         self.create_vision_controls(inner)
 
     def create_vision_controls(self, parent):
         """创建自动监控控制"""
         vision_frame = tk.Frame(
             parent,
-            bg=self.colors["card_hover"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
-            pady=12,
-            padx=14
+            bg=self.colors["panel"],
+            pady=9,
+            padx=12
         )
-        vision_frame.pack(fill=tk.X, pady=(16, 0))
+        vision_frame.pack(fill=tk.X, pady=(6, 0))
 
-        # 左侧：开关
-        left_frame = tk.Frame(vision_frame, bg=self.colors["card_hover"])
+        left_frame = tk.Frame(vision_frame, bg=self.colors["panel"])
         left_frame.pack(side=tk.LEFT)
 
         self.vision_enabled = tk.BooleanVar(value=False)
         vision_check = tk.Checkbutton(
             left_frame,
-            text="🤖 自动监控",
+            text="AUTO",
             variable=self.vision_enabled,
-            font=("Segoe UI", 11, "bold"),
-            bg=self.colors["card_hover"],
-            fg=self.colors["blue"],
+            font=("Arial", 10, "bold"),
+            bg=self.colors["panel"],
+            fg=self.colors["accent"],
             selectcolor=self.colors["bg"],
-            activebackground=self.colors["card_hover"],
-            activeforeground=self.colors["blue"],
+            activebackground=self.colors["panel"],
+            activeforeground=self.colors["accent"],
             command=self.toggle_vision
         )
         vision_check.pack(side=tk.LEFT)
 
-        # 自动监控说明
         tk.Label(
             left_frame,
-            text="优先 Riot API → 回退视觉识别",
-            font=("Segoe UI", 10),
-            bg=self.colors["card_hover"],
+            text="Riot API primary / Vision fallback",
+            font=("Arial", 9),
+            bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
         ).pack(side=tk.LEFT, padx=(10, 0))
 
-        # 状态标签
         self.vision_status = tk.Label(
             left_frame,
             text="[未启用]",
-            font=("Segoe UI", 10),
-            bg=self.colors["card_hover"],
+            font=("Arial", 9),
+            bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
         )
         self.vision_status.pack(side=tk.LEFT, padx=(15, 0))
 
-        # 右侧：分辨率选择
-        right_frame = tk.Frame(vision_frame, bg=self.colors["card_hover"])
+        right_frame = tk.Frame(vision_frame, bg=self.colors["panel"])
         right_frame.pack(side=tk.RIGHT)
 
         tk.Label(
             right_frame,
-            text="视觉分辨率:",
-            font=("Segoe UI", 10),
-            bg=self.colors["card_hover"],
+            text="VISION:",
+            font=("Arial", 8, "bold"),
+            bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
         ).pack(side=tk.LEFT)
 
@@ -588,8 +622,8 @@ class JungleTimer:
             textvariable=self.resolution_var,
             values=["1920x1080", "2560x1440", "3840x2160", "其他"],
             state="readonly",
-            width=12,
-            font=("Segoe UI", 10),
+            width=10,
+            font=("Arial", 9),
             style="Game.TCombobox"
         )
         self.res_menu.pack(side=tk.LEFT, padx=(5, 0))
@@ -606,103 +640,131 @@ class JungleTimer:
         self.init_vision_timer()
         self.init_auto_monitor()
 
-    def create_control_section(self, parent):
-        """创建控制按钮区域"""
-        control_frame = tk.Frame(
-            parent,
-            bg=self.colors["card"],
-            highlightbackground=self.colors["border"],
-            highlightthickness=1,
-            bd=0
-        )
-        control_frame.pack(fill=tk.X, pady=12)
+    def create_hud_controls(self, parent):
+        """创建 HUD 控制条"""
+        control_frame = tk.Frame(parent, bg=self.colors["bg"])
+        control_frame.pack(fill=tk.X)
 
-        inner = tk.Frame(control_frame, bg=self.colors["card"])
-        inner.pack(fill=tk.X, padx=22, pady=18)
+        btn_container = tk.Frame(control_frame, bg=self.colors["bg"])
+        btn_container.pack(fill=tk.X)
 
-        tk.Label(
-            inner,
-            text="CONTROL",
-            font=("Consolas", 11, "bold"),
-            bg=self.colors["card"],
-            fg=self.colors["text_secondary"]
-        ).pack(anchor="w")
-
-        # 按钮容器
-        btn_container = tk.Frame(inner, bg=self.colors["card"])
-        btn_container.pack(pady=(10, 0))
-
-        # 开始按钮
         self.start_btn = GlowButton(
             btn_container,
-            text="▶ 开始",
+            text="START",
             command=self.start_timer,
-            width=150, height=54,
+            width=98, height=40,
             bg_color=self.colors["green"],
-            font_size=14
+            font_size=11
         )
-        self.start_btn.pack(side=tk.LEFT, padx=9)
+        self.start_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-        # 暂停按钮
         self.pause_btn = GlowButton(
             btn_container,
-            text="⏸ 暂停",
+            text="PAUSE",
             command=self.pause_timer,
-            width=130, height=54,
+            width=94, height=40,
             bg_color=self.colors["orange"],
-            font_size=14
+            font_size=11
         )
-        self.pause_btn.pack(side=tk.LEFT, padx=9)
+        self.pause_btn.pack(side=tk.LEFT, padx=8)
         self.pause_btn.set_state("disabled")
 
-        # 重置按钮
         self.reset_btn = GlowButton(
             btn_container,
-            text="⏹ 重置",
+            text="RESET",
             command=self.reset_timer,
-            width=130, height=54,
+            width=94, height=40,
             bg_color=self.colors["red"],
-            font_size=14
+            font_size=11
         )
-        self.reset_btn.pack(side=tk.LEFT, padx=9)
+        self.reset_btn.pack(side=tk.LEFT, padx=8)
 
-        # 完成按钮
         self.complete_btn = GlowButton(
             btn_container,
-            text="✓ 完成 (F4)",
+            text="DONE",
             command=self.manual_complete,
-            width=148, height=54,
-            bg_color="#2A89C8",
-            font_size=14
+            width=94, height=40,
+            bg_color=self.colors["accent"],
+            font_size=11
         )
-        self.complete_btn.pack(side=tk.LEFT, padx=9)
+        self.complete_btn.pack(side=tk.LEFT, padx=8)
 
-        # 快捷键提示
-        shortcut_frame = tk.Frame(inner, bg=self.colors["card"])
-        shortcut_frame.pack(pady=(16, 0))
+        self.details_btn = GlowButton(
+            btn_container,
+            text="DETAILS",
+            command=self.toggle_details_panel,
+            width=110,
+            height=40,
+            bg_color="#6F7A89",
+            font_size=11
+        )
+        self.details_btn.pack(side=tk.RIGHT)
 
-        shortcuts = [
-            ("F1", "开始"),
-            ("F2", "暂停"),
-            ("F3", "重置"),
-            ("F4", "完成")
-        ]
+    def create_detail_panel(self, parent):
+        """创建可滚动的详情面板"""
+        self.detail_shell = tk.Frame(parent, bg=self.colors["bg"])
 
-        for key, desc in shortcuts:
-            frame = tk.Frame(
-                shortcut_frame,
-                bg=self.colors["card_hover"],
-                highlightbackground=self.colors["border"],
-                highlightthickness=1,
-                padx=10,
-                pady=5
-            )
-            frame.pack(side=tk.LEFT, padx=6)
+        canvas_wrap = tk.Frame(
+            self.detail_shell,
+            bg=self.colors["card"],
+            highlightbackground=self.colors["border"],
+            highlightthickness=1
+        )
+        canvas_wrap.pack(fill=tk.BOTH, expand=True)
 
-            tk.Label(frame, text=key, font=("Consolas", 11, "bold"),
-                    bg=self.colors["card_hover"], fg=self.colors["blue"]).pack(side=tk.LEFT)
-            tk.Label(frame, text=f" {desc}", font=("Segoe UI", 10),
-                    bg=self.colors["card_hover"], fg=self.colors["text_secondary"]).pack(side=tk.LEFT)
+        self.details_canvas = tk.Canvas(
+            canvas_wrap,
+            bg=self.colors["bg"],
+            highlightthickness=0,
+            bd=0
+        )
+        self.details_scrollbar = ttk.Scrollbar(
+            canvas_wrap,
+            orient="vertical",
+            command=self.details_canvas.yview
+        )
+        self.details_content = tk.Frame(self.details_canvas, bg=self.colors["bg"])
+        self.details_content.bind(
+            "<Configure>",
+            lambda e: self.details_canvas.configure(scrollregion=self.details_canvas.bbox("all"))
+        )
+
+        self.details_canvas_window = self.details_canvas.create_window(
+            (0, 0),
+            window=self.details_content,
+            anchor="nw"
+        )
+        self.details_canvas.configure(yscrollcommand=self.details_scrollbar.set)
+        self.details_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.details_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.details_canvas.bind("<MouseWheel>", self.on_details_mousewheel)
+        self.details_content.bind("<MouseWheel>", self.on_details_mousewheel)
+        self.details_canvas.bind(
+            "<Configure>",
+            lambda e: self.details_canvas.itemconfigure(self.details_canvas_window, width=e.width)
+        )
+
+        self.create_camps_section(self.details_content)
+        self.create_footer_section(self.details_content)
+
+    def toggle_details_panel(self):
+        """切换 HUD 详情面板"""
+        self.remember_geometry()
+        self.details_visible = not self.details_visible
+
+        if self.details_visible:
+            self.detail_shell.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+            self.details_btn.set_text("COLLAPSE")
+        else:
+            self.detail_shell.pack_forget()
+            self.details_btn.set_text("DETAILS")
+
+        self.apply_mode_geometry()
+
+    def on_details_mousewheel(self, event):
+        """滚动详情面板"""
+        if self.details_visible:
+            self.details_canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def create_camps_section(self, parent):
         """创建野怪营地区域"""
@@ -1347,8 +1409,12 @@ F4 - 手动完成
 3. 每清理完一个营地，点击对应按钮
 4. 结束：打完路线自动完成，或按F4
 
+【HUD 模式】
+• 默认置顶、半透明，适合贴在游戏上查看
+• 点击 DETAILS 可展开完整面板
+
 【自动监控】
-• 勾选"🤖 自动监控"启用
+• 勾选"AUTO"启用
 • 优先使用 Riot 本地 API
 • API 不可用时自动回退视觉识别
 • 0:55 自动开始，4级自动结束
@@ -1418,6 +1484,7 @@ F4 - 手动完成
         self.auto_monitor = AutoMonitorCoordinator(
             live_client_timer=self.live_client_timer,
             vision_timer=self.vision_timer,
+            probe_timeout=3.0,
         )
 
     def get_auto_backend_label(self):
@@ -1428,15 +1495,26 @@ F4 - 手动完成
         }
         return labels.get(self.active_auto_backend, "自动监控")
 
+    def update_backend_badge(self, backend: Optional[str] = None):
+        """更新 HUD 后端标记"""
+        label_map = {
+            "riot_api": ("BACKEND   RIOT API", self.colors["accent"]),
+            "vision": ("BACKEND   VISION", self.colors["orange"]),
+            "unavailable": ("BACKEND   OFFLINE", self.colors["red"]),
+            None: ("BACKEND   OFF", self.colors["text_secondary"]),
+        }
+        text, color = label_map.get(backend, label_map[None])
+        self.backend_label.config(text=text, fg=color)
+
     def format_auto_backend_reason(self, reason: Optional[str]) -> str:
         """格式化后端失败原因"""
         mapping = {
-            "connection_failed": "Riot API 未连接到游戏客户端",
-            "ssl_error": "Riot API 证书握手失败",
-            "invalid_data": "Riot API 返回了不完整的对局数据",
-            "startup_timeout": "Riot API 在启动窗口内没有提供可用对局数据",
+            "connection_failed": "客户端未连接",
+            "ssl_error": "证书失败",
+            "invalid_data": "返回数据异常",
+            "startup_timeout": "启动超时",
         }
-        return mapping.get(reason, "自动监控启动失败")
+        return mapping.get(reason, "启动失败")
 
     def on_auto_start_detected(self):
         """自动监控-开始触发"""
@@ -1464,6 +1542,7 @@ F4 - 手动完成
             return
         self.auto_monitor.stop()
         self.active_auto_backend = None
+        self.update_backend_badge(None)
 
     def toggle_vision(self):
         """切换自动监控开关"""
@@ -1481,7 +1560,11 @@ F4 - 手动完成
 
             if result.backend == "unavailable":
                 self.vision_enabled.set(False)
-                self.vision_status.config(text=result.status_text, fg=self.colors["red"])
+                self.vision_status.config(
+                    text=f"{result.status_text} {self.format_auto_backend_reason(result.fallback_reason)}",
+                    fg=self.colors["red"]
+                )
+                self.update_backend_badge("unavailable")
                 if not self.is_running:
                     self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
                     self.status_dot.itemconfig(1, fill=self.colors["border"])
@@ -1494,6 +1577,7 @@ F4 - 手动完成
                 return
 
             status_color = "blue" if result.backend == "riot_api" else "orange"
+            self.update_backend_badge(result.backend)
             self.vision_status.config(text=result.status_text, fg=self.colors[status_color])
             self.status_label.config(
                 text=f"{self.get_auto_backend_label()}监控中...",
