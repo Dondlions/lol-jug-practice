@@ -292,10 +292,9 @@ class JungleTimer:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("LOL Jungle Timer Pro")
-        self.root.geometry("560x250+40+40")
-        self.root.minsize(520, 220)
+        self.root.geometry("700x360+40+40")
+        self.root.minsize(700, 360)
         self.root.configure(bg="#05070A")
-        self.configure_window()
 
         # 主题色
         self.colors = {
@@ -325,7 +324,7 @@ class JungleTimer:
         self.camp_times = {}
         self.details_visible = False
         self.hud_window_state = HUDWindowState(
-            full_size=(620, 310),
+            full_size=(700, 360),
             compact_size=(340, 112),
             position=(40, 40),
         )
@@ -337,7 +336,7 @@ class JungleTimer:
         # 创建UI
         self.create_styles()
         self.create_widgets()
-        self.initialize_window_layout()
+        self.root.after(0, self.finalize_initial_window)
         self.update_timer()
         self.bind_shortcuts()
         
@@ -383,13 +382,9 @@ class JungleTimer:
         except tk.TclError:
             pass
 
-    def initialize_window_layout(self):
-        """根据实际内容设置完整 HUD 初始尺寸"""
-        self.root.update_idletasks()
-        self.hud_window_state.update_full_size(
-            self.root.winfo_reqwidth(),
-            self.root.winfo_reqheight(),
-        )
+    def finalize_initial_window(self):
+        """在窗口首帧渲染后应用 HUD 样式，避免白屏/空白首帧"""
+        self.configure_window()
         self.apply_window_mode()
 
     def sync_window_position(self):

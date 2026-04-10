@@ -8,7 +8,7 @@ HUD 窗口状态管理
 class HUDWindowState:
     """管理完整 HUD 与紧凑计时条之间的切换"""
 
-    def __init__(self, full_size=(620, 310), compact_size=(320, 110), position=(40, 40)):
+    def __init__(self, full_size=(700, 360), compact_size=(320, 110), position=(40, 40)):
         self.full_size = full_size
         self.compact_size = compact_size
         self.position = position
