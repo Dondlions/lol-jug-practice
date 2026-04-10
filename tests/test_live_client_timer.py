@@ -55,3 +55,22 @@ def test_probe_reports_invalid_data_when_required_fields_missing():
 
     assert available is False
     assert reason == "invalid_data"
+
+
+def test_process_state_resets_after_game_time_rolls_back_for_next_game():
+    starts = []
+    ends = []
+    timer = LiveClientTimer(
+        start_callback=lambda: starts.append("start"),
+        end_callback=lambda: ends.append("end"),
+        fetch_json=lambda _path: {"gameTime": 0, "level": 1},
+        check_interval=0.01,
+    )
+
+    timer.process_state(timer.read_state().__class__(game_time=55.2, level=3))
+    timer.process_state(timer.read_state().__class__(game_time=70.0, level=4))
+    timer.process_state(timer.read_state().__class__(game_time=3.0, level=1))
+    timer.process_state(timer.read_state().__class__(game_time=55.5, level=3))
+
+    assert starts == ["start", "start"]
+    assert ends == ["end"]

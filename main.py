@@ -14,7 +14,9 @@ from datetime import datetime
 from typing import Dict, List, Optional
 import threading
 from auto_backend import AutoMonitorCoordinator
+from hud_window_state import HUDWindowState
 from live_client_timer import LiveClientTimer
+from window_overlay import set_clickthrough
 
 # 视觉识别模块（可选）
 try:
@@ -322,8 +324,11 @@ class JungleTimer:
         self.route_options = {route["name"]: key for key, route in self.ROUTES.items()}
         self.camp_times = {}
         self.details_visible = False
-        self.hud_geometry = "560x250+40+40"
-        self.expanded_geometry = "560x760+40+40"
+        self.hud_window_state = HUDWindowState(
+            full_size=(620, 310),
+            compact_size=(340, 112),
+            position=(40, 40),
+        )
         
         # 历史记录
         self.history_file = os.path.join(os.path.dirname(__file__), "history.json")
@@ -332,6 +337,7 @@ class JungleTimer:
         # 创建UI
         self.create_styles()
         self.create_widgets()
+        self.initialize_window_layout()
         self.update_timer()
         self.bind_shortcuts()
         
@@ -377,21 +383,62 @@ class JungleTimer:
         except tk.TclError:
             pass
 
-    def remember_geometry(self):
-        """记录当前窗口位置，用于 HUD/展开模式切换"""
+    def initialize_window_layout(self):
+        """根据实际内容设置完整 HUD 初始尺寸"""
         self.root.update_idletasks()
-        geometry = self.root.geometry()
-        if "+" in geometry:
-            size, x, y = geometry.split("+", 2)
-            if self.details_visible:
-                self.expanded_geometry = f"{self.expanded_geometry.split('+', 1)[0]}+{x}+{y}"
-            else:
-                self.hud_geometry = f"{self.hud_geometry.split('+', 1)[0]}+{x}+{y}"
+        self.hud_window_state.update_full_size(
+            self.root.winfo_reqwidth(),
+            self.root.winfo_reqheight(),
+        )
+        self.apply_window_mode()
 
-    def apply_mode_geometry(self):
-        """应用当前 HUD 模式的窗口尺寸"""
-        geometry = self.expanded_geometry if self.details_visible else self.hud_geometry
-        self.root.geometry(geometry)
+    def sync_window_position(self):
+        """同步当前窗口位置到 HUD 状态"""
+        self.root.update_idletasks()
+        self.hud_window_state.update_position(self.root.winfo_x(), self.root.winfo_y())
+
+    def apply_window_mode(self):
+        """应用当前窗口模式与点击穿透状态"""
+        self.apply_hud_visibility()
+        self.root.update_idletasks()
+        if self.details_visible and self.hud_window_state.mode == "full":
+            width = max(self.root.winfo_reqwidth(), self.hud_window_state.full_size[0])
+            height = self.root.winfo_reqheight()
+            x, y = self.hud_window_state.position
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+        else:
+            self.root.geometry(self.hud_window_state.current_geometry())
+        set_clickthrough(self.root, self.hud_window_state.clickthrough)
+
+    def apply_hud_visibility(self):
+        """根据 HUD 模式显示或隐藏组件"""
+        compact = self.hud_window_state.mode == "compact"
+
+        if compact:
+            if self.header_frame.winfo_manager():
+                self.header_frame.pack_forget()
+            if self.control_frame.winfo_manager():
+                self.control_frame.pack_forget()
+            if self.vision_frame.winfo_manager():
+                self.vision_frame.pack_forget()
+            if self.route_badge.winfo_manager():
+                self.route_badge.pack_forget()
+            self.route_badge.config(font=("Arial", 8, "bold"))
+            self.timer_label.config(font=("Arial", 36, "bold"))
+            self.backend_label.pack_forget()
+        else:
+            if not self.header_frame.winfo_manager():
+                self.header_frame.pack(fill=tk.X, pady=(0, 10), before=self.timer_card)
+            if not self.control_frame.winfo_manager():
+                self.control_frame.pack(fill=tk.X, after=self.timer_card)
+            if not self.vision_frame.winfo_manager():
+                self.vision_frame.pack(fill=tk.X, pady=(6, 0))
+            if not self.route_badge.winfo_manager():
+                self.route_badge.pack(anchor="w", before=self.timer_label)
+            if not self.backend_label.winfo_manager():
+                self.backend_label.pack(side=tk.RIGHT)
+            self.route_badge.config(font=("Arial", 9, "bold"))
+            self.timer_label.config(font=("Arial", 42, "bold"))
 
     def bind_drag_region(self, widget):
         """让 HUD 区域支持拖动窗口"""
@@ -409,7 +456,10 @@ class JungleTimer:
         """拖动 HUD 窗口"""
         offset_x = event.x_root - self._drag_start_x
         offset_y = event.y_root - self._drag_start_y
-        self.root.geometry(f"+{self._drag_window_x + offset_x}+{self._drag_window_y + offset_y}")
+        next_x = self._drag_window_x + offset_x
+        next_y = self._drag_window_y + offset_y
+        self.root.geometry(f"+{next_x}+{next_y}")
+        self.hud_window_state.update_position(next_x, next_y)
 
     def create_widgets(self):
         """创建界面组件"""
@@ -420,19 +470,18 @@ class JungleTimer:
         self.create_timer_section(self.main_frame)
         self.create_hud_controls(self.main_frame)
         self.create_detail_panel(self.main_frame)
-        self.apply_mode_geometry()
 
     def create_header(self, parent):
         """创建 HUD 顶部信息条"""
-        header = tk.Frame(
+        self.header_frame = tk.Frame(
             parent,
             bg=self.colors["panel"],
             bd=0
         )
-        header.pack(fill=tk.X, pady=(0, 10))
-        self.bind_drag_region(header)
+        self.header_frame.pack(fill=tk.X, pady=(0, 10))
+        self.bind_drag_region(self.header_frame)
 
-        header_inner = tk.Frame(header, bg=self.colors["panel"])
+        header_inner = tk.Frame(self.header_frame, bg=self.colors["panel"])
         header_inner.pack(fill=tk.X, padx=16, pady=12)
         self.bind_drag_region(header_inner)
 
@@ -491,14 +540,14 @@ class JungleTimer:
 
     def create_timer_section(self, parent):
         """创建 HUD 计时器区域"""
-        timer_card = tk.Frame(
+        self.timer_card = tk.Frame(
             parent,
             bg=self.colors["card"],
             bd=0
         )
-        timer_card.pack(fill=tk.X, pady=(0, 10))
+        self.timer_card.pack(fill=tk.X, pady=(0, 10))
 
-        inner = tk.Frame(timer_card, bg=self.colors["card"])
+        inner = tk.Frame(self.timer_card, bg=self.colors["card"])
         inner.pack(fill=tk.X, padx=18, pady=16)
 
         self.route_badge = tk.Label(
@@ -519,11 +568,11 @@ class JungleTimer:
         )
         self.timer_label.pack(anchor="w", pady=(2, 8))
 
-        info_row = tk.Frame(inner, bg=self.colors["card"])
-        info_row.pack(fill=tk.X)
+        self.info_row = tk.Frame(inner, bg=self.colors["card"])
+        self.info_row.pack(fill=tk.X)
 
         status_frame = tk.Frame(
-            info_row,
+            self.info_row,
             bg=self.colors["panel"],
             padx=12,
             pady=7
@@ -550,7 +599,7 @@ class JungleTimer:
         self.status_label.pack(side=tk.LEFT, padx=(10, 0))
 
         self.backend_label = tk.Label(
-            info_row,
+            self.info_row,
             text="BACKEND   OFF",
             font=("Arial", 9, "bold"),
             bg=self.colors["card"],
@@ -562,15 +611,15 @@ class JungleTimer:
 
     def create_vision_controls(self, parent):
         """创建自动监控控制"""
-        vision_frame = tk.Frame(
+        self.vision_frame = tk.Frame(
             parent,
             bg=self.colors["panel"],
             pady=9,
             padx=12
         )
-        vision_frame.pack(fill=tk.X, pady=(6, 0))
+        self.vision_frame.pack(fill=tk.X, pady=(6, 0))
 
-        left_frame = tk.Frame(vision_frame, bg=self.colors["panel"])
+        left_frame = tk.Frame(self.vision_frame, bg=self.colors["panel"])
         left_frame.pack(side=tk.LEFT)
 
         self.vision_enabled = tk.BooleanVar(value=False)
@@ -605,7 +654,7 @@ class JungleTimer:
         )
         self.vision_status.pack(side=tk.LEFT, padx=(15, 0))
 
-        right_frame = tk.Frame(vision_frame, bg=self.colors["panel"])
+        right_frame = tk.Frame(self.vision_frame, bg=self.colors["panel"])
         right_frame.pack(side=tk.RIGHT)
 
         tk.Label(
@@ -642,10 +691,10 @@ class JungleTimer:
 
     def create_hud_controls(self, parent):
         """创建 HUD 控制条"""
-        control_frame = tk.Frame(parent, bg=self.colors["bg"])
-        control_frame.pack(fill=tk.X)
+        self.control_frame = tk.Frame(parent, bg=self.colors["bg"])
+        self.control_frame.pack(fill=tk.X)
 
-        btn_container = tk.Frame(control_frame, bg=self.colors["bg"])
+        btn_container = tk.Frame(self.control_frame, bg=self.colors["bg"])
         btn_container.pack(fill=tk.X)
 
         self.start_btn = GlowButton(
@@ -749,7 +798,7 @@ class JungleTimer:
 
     def toggle_details_panel(self):
         """切换 HUD 详情面板"""
-        self.remember_geometry()
+        self.sync_window_position()
         self.details_visible = not self.details_visible
 
         if self.details_visible:
@@ -759,7 +808,7 @@ class JungleTimer:
             self.detail_shell.pack_forget()
             self.details_btn.set_text("DETAILS")
 
-        self.apply_mode_geometry()
+        self.apply_window_mode()
 
     def on_details_mousewheel(self, event):
         """滚动详情面板"""
@@ -984,6 +1033,7 @@ class JungleTimer:
         self.start_time = None
         self.pause_time = None
         self.camp_times = {}
+        self.restore_full_hud()
         
         self.timer_label.config(text="00:00.00", fg=self.colors["gold"])
         self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
@@ -1091,6 +1141,7 @@ class JungleTimer:
     def complete_run(self):
         """完成一轮打野"""
         if self.is_running:
+            self.restore_full_hud()
             total_time = time.time() - self.start_time
             self.is_running = False
             
@@ -1523,6 +1574,7 @@ F4 - 手动完成
         if not self.is_running and self.start_time is None:
             print(f"[{self.get_auto_backend_label()}] 检测到0:55，自动开始！")
             self.start_timer()
+            self.enter_compact_hud()
             self.vision_status.config(
                 text=f"[{self.get_auto_backend_label()} 已开始 - 监控4级...]",
                 fg=self.colors["orange"]
@@ -1580,6 +1632,22 @@ F4 - 手动完成
             if not self.is_running:
                 self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
                 self.status_dot.itemconfig(1, fill=self.colors["border"])
+
+    def enter_compact_hud(self):
+        """进入自动开跑后的紧凑计时 HUD"""
+        self.sync_window_position()
+        if self.details_visible:
+            self.details_visible = False
+            self.detail_shell.pack_forget()
+            self.details_btn.set_text("DETAILS")
+        self.hud_window_state.enter_auto_run_mode()
+        self.apply_window_mode()
+
+    def restore_full_hud(self):
+        """恢复完整可交互 HUD"""
+        self.sync_window_position()
+        self.hud_window_state.restore_full_mode()
+        self.apply_window_mode()
                 
     def apply_resolution(self):
         """应用分辨率设置"""

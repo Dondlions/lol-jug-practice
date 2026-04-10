@@ -61,6 +61,7 @@ class LiveClientTimer:
         self.monitor_thread: Optional[threading.Thread] = None
         self.last_state: Optional[LiveClientState] = None
         self.last_error_reason: Optional[str] = None
+        self.last_game_time: Optional[float] = None
 
         # Riot 本地接口使用自签名证书，主动关闭校验以避免误判。
         self.ssl_context = ssl._create_unverified_context()
@@ -139,28 +140,44 @@ class LiveClientTimer:
         self.is_running = True
         self.start_detected = False
         self.end_detected = False
+        self.last_game_time = None
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
         print("[LiveClient] 开始监控 Riot 本地 API")
+
+    def process_state(self, state: LiveClientState):
+        """处理单帧对局状态，支持多局连续监控"""
+        # 练习模式重置或重新开局时，gameTime 会从较大值回到很小的值。
+        if (
+            self.last_game_time is not None
+            and self.last_game_time >= self.target_time_seconds
+            and state.game_time < 10
+            and state.game_time + 15 < self.last_game_time
+        ):
+            self.start_detected = False
+            self.end_detected = False
+            print("[LiveClient] 检测到新的一局，已重置监控状态")
+
+        if not self.start_detected and state.game_time >= self.target_time_seconds:
+            self.start_detected = True
+            print(f"[LiveClient] 检测到目标时间: {state.game_time:.2f}s")
+            if self.start_callback:
+                self.start_callback()
+
+        if self.start_detected and not self.end_detected and state.level >= self.target_end_level:
+            self.end_detected = True
+            print(f"[LiveClient] 检测到等级{state.level}，触发结束！")
+            if self.end_callback:
+                self.end_callback()
+
+        self.last_game_time = state.game_time
 
     def _monitor_loop(self):
         try:
             while self.is_running:
                 try:
                     state = self.read_state()
-
-                    if not self.start_detected and state.game_time >= self.target_time_seconds:
-                        self.start_detected = True
-                        print(f"[LiveClient] 检测到目标时间: {state.game_time:.2f}s")
-                        if self.start_callback:
-                            self.start_callback()
-
-                    if self.start_detected and not self.end_detected and state.level >= self.target_end_level:
-                        self.end_detected = True
-                        print(f"[LiveClient] 检测到等级{state.level}，触发结束！")
-                        if self.end_callback:
-                            self.end_callback()
-                        break
+                    self.process_state(state)
 
                 except LiveClientError as exc:
                     self.last_error_reason = exc.reason
