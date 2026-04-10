@@ -433,6 +433,7 @@ class VisionTimer:
             
         self.is_running = True
         self.start_detected = False
+        self.end_detected = False
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
         print(f"[Vision] 开始监控游戏时间，目标: {self.target_time}")
@@ -488,12 +489,15 @@ class VisionTimer:
                 print(f"[Vision] 监控错误: {e}")
                 
             time.sleep(self.check_interval)
+
+        self.is_running = False
             
     def stop_monitoring(self):
         """停止监控"""
         self.is_running = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=1)
+            self.monitor_thread = None
         print("[Vision] 监控已停止")
         
     def calibrate(self):

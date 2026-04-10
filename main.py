@@ -13,6 +13,8 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import threading
+from auto_backend import AutoMonitorCoordinator
+from live_client_timer import LiveClientTimer
 
 # 视觉识别模块（可选）
 try:
@@ -515,12 +517,11 @@ class JungleTimer:
         )
         self.status_label.pack(side=tk.LEFT, padx=(10, 0))
 
-        # 视觉识别选项
-        if VISION_AVAILABLE:
-            self.create_vision_controls(inner)
+        # 自动监控选项
+        self.create_vision_controls(inner)
 
     def create_vision_controls(self, parent):
-        """创建视觉识别控制"""
+        """创建自动监控控制"""
         vision_frame = tk.Frame(
             parent,
             bg=self.colors["card_hover"],
@@ -538,7 +539,7 @@ class JungleTimer:
         self.vision_enabled = tk.BooleanVar(value=False)
         vision_check = tk.Checkbutton(
             left_frame,
-            text="👁️ 视觉识别",
+            text="🤖 自动监控",
             variable=self.vision_enabled,
             font=("Segoe UI", 11, "bold"),
             bg=self.colors["card_hover"],
@@ -550,10 +551,10 @@ class JungleTimer:
         )
         vision_check.pack(side=tk.LEFT)
 
-        # 视觉识别说明
+        # 自动监控说明
         tk.Label(
             left_frame,
-            text="0:55开始 → 4级结束",
+            text="优先 Riot API → 回退视觉识别",
             font=("Segoe UI", 10),
             bg=self.colors["card_hover"],
             fg=self.colors["text_secondary"]
@@ -575,14 +576,14 @@ class JungleTimer:
 
         tk.Label(
             right_frame,
-            text="分辨率:",
+            text="视觉分辨率:",
             font=("Segoe UI", 10),
             bg=self.colors["card_hover"],
             fg=self.colors["text_secondary"]
         ).pack(side=tk.LEFT)
 
         self.resolution_var = tk.StringVar(value="1920x1080")
-        res_menu = ttk.Combobox(
+        self.res_menu = ttk.Combobox(
             right_frame,
             textvariable=self.resolution_var,
             values=["1920x1080", "2560x1440", "3840x2160", "其他"],
@@ -591,12 +592,19 @@ class JungleTimer:
             font=("Segoe UI", 10),
             style="Game.TCombobox"
         )
-        res_menu.pack(side=tk.LEFT, padx=(5, 0))
-        res_menu.bind("<<ComboboxSelected>>", self.on_resolution_change)
+        self.res_menu.pack(side=tk.LEFT, padx=(5, 0))
+        self.res_menu.bind("<<ComboboxSelected>>", self.on_resolution_change)
+        if not VISION_AVAILABLE:
+            self.res_menu.config(state="disabled")
 
-        # 初始化视觉识别
+        # 初始化自动监控
         self.vision_timer = None
+        self.live_client_timer = None
+        self.auto_monitor = None
+        self.active_auto_backend = None
+        self.init_live_client_timer()
         self.init_vision_timer()
+        self.init_auto_monitor()
 
     def create_control_section(self, parent):
         """创建控制按钮区域"""
@@ -1339,10 +1347,11 @@ F4 - 手动完成
 3. 每清理完一个营地，点击对应按钮
 4. 结束：打完路线自动完成，或按F4
 
-【视觉识别】
-• 勾选"👁️ 视觉识别"启用
+【自动监控】
+• 勾选"🤖 自动监控"启用
+• 优先使用 Riot 本地 API
+• API 不可用时自动回退视觉识别
 • 0:55 自动开始，4级自动结束
-• 全程无需手动操作
 
 【路线说明】
 • 红开全清: 红→石→F6→狼→蓝→蛙
@@ -1372,65 +1381,127 @@ F4 - 手动完成
             bg_color=self.colors["gold"]
         ).pack(pady=20)
         
-    # ===== 视觉识别相关方法 =====
-    
+    # ===== 自动监控相关方法 =====
+
+    def init_live_client_timer(self):
+        """初始化 Riot 本地 API 计时器"""
+        def on_start_trigger():
+            self.root.after(0, self.on_auto_start_detected)
+
+        def on_end_trigger():
+            self.root.after(0, self.on_auto_end_detected)
+
+        self.live_client_timer = LiveClientTimer(
+            start_callback=on_start_trigger,
+            end_callback=on_end_trigger
+        )
+
     def init_vision_timer(self):
         """初始化视觉识别计时器"""
         if not VISION_AVAILABLE:
             return
-            
+
         def on_start_trigger():
-            self.root.after(0, self.on_vision_start_detected)
-            
+            self.root.after(0, self.on_auto_start_detected)
+
         def on_end_trigger():
-            self.root.after(0, self.on_vision_end_detected)
-            
+            self.root.after(0, self.on_auto_end_detected)
+
         self.vision_timer = VisionTimer(
             start_callback=on_start_trigger,
             end_callback=on_end_trigger
         )
         self.vision_timer.target_time = "0:55"
-        
-    def on_vision_start_detected(self):
-        """视觉识别-开始触发"""
+
+    def init_auto_monitor(self):
+        """初始化自动监控协调器"""
+        self.auto_monitor = AutoMonitorCoordinator(
+            live_client_timer=self.live_client_timer,
+            vision_timer=self.vision_timer,
+        )
+
+    def get_auto_backend_label(self):
+        """获取当前自动监控后端名称"""
+        labels = {
+            "riot_api": "Riot API",
+            "vision": "视觉识别",
+        }
+        return labels.get(self.active_auto_backend, "自动监控")
+
+    def format_auto_backend_reason(self, reason: Optional[str]) -> str:
+        """格式化后端失败原因"""
+        mapping = {
+            "connection_failed": "Riot API 未连接到游戏客户端",
+            "ssl_error": "Riot API 证书握手失败",
+            "invalid_data": "Riot API 返回了不完整的对局数据",
+            "startup_timeout": "Riot API 在启动窗口内没有提供可用对局数据",
+        }
+        return mapping.get(reason, "自动监控启动失败")
+
+    def on_auto_start_detected(self):
+        """自动监控-开始触发"""
         if not self.is_running and self.start_time is None:
-            print("[Vision] 检测到0:55，自动开始！")
+            print(f"[{self.get_auto_backend_label()}] 检测到0:55，自动开始！")
             self.start_timer()
             self.vision_status.config(
-                text="[已开始 - 监控4级...]",
+                text=f"[{self.get_auto_backend_label()} 已开始 - 监控4级...]",
                 fg=self.colors["orange"]
             )
-            
-    def on_vision_end_detected(self):
-        """视觉识别-结束触发"""
+
+    def on_auto_end_detected(self):
+        """自动监控-结束触发"""
         if self.is_running:
-            print("[Vision] 检测到4级，自动结束！")
+            print(f"[{self.get_auto_backend_label()}] 检测到4级，自动结束！")
             self.complete_run()
             self.vision_status.config(
-                text="[已完成 - 到达4级]",
+                text=f"[{self.get_auto_backend_label()} 已完成 - 到达4级]",
                 fg=self.colors["green"]
             )
-            
-    def toggle_vision(self):
-        """切换视觉识别开关"""
-        if not VISION_AVAILABLE or self.vision_timer is None:
+
+    def stop_auto_monitoring(self):
+        """停止自动监控"""
+        if self.auto_monitor is None:
             return
-            
+        self.auto_monitor.stop()
+        self.active_auto_backend = None
+
+    def toggle_vision(self):
+        """切换自动监控开关"""
+        if self.auto_monitor is None:
+            return
+
         enabled = self.vision_enabled.get()
-        
+
         if enabled:
-            self.apply_resolution()
-            self.vision_timer.start_detected = False
-            self.vision_timer.end_detected = False
-            self.vision_timer.start_monitoring()
-            self.vision_status.config(
-                text="[监控中 - 0:55→4级]",
-                fg=self.colors["orange"]
+            if VISION_AVAILABLE and self.vision_timer is not None:
+                self.apply_resolution()
+
+            result = self.auto_monitor.start()
+            self.active_auto_backend = None if result.backend == "unavailable" else result.backend
+
+            if result.backend == "unavailable":
+                self.vision_enabled.set(False)
+                self.vision_status.config(text=result.status_text, fg=self.colors["red"])
+                if not self.is_running:
+                    self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
+                    self.status_dot.itemconfig(1, fill=self.colors["border"])
+
+                messagebox.showwarning(
+                    "自动监控不可用",
+                    self.format_auto_backend_reason(result.fallback_reason),
+                    parent=self.root
+                )
+                return
+
+            status_color = "blue" if result.backend == "riot_api" else "orange"
+            self.vision_status.config(text=result.status_text, fg=self.colors[status_color])
+            self.status_label.config(
+                text=f"{self.get_auto_backend_label()}监控中...",
+                fg=self.colors["blue"]
             )
-            self.status_label.config(text="视觉识别监控中...", fg=self.colors["blue"])
             self.status_dot.itemconfig(1, fill=self.colors["blue"])
         else:
-            self.vision_timer.stop_monitoring()
+            self.stop_auto_monitoring()
             self.vision_status.config(text="[未启用]", fg=self.colors["text_secondary"])
             if not self.is_running:
                 self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
@@ -1493,7 +1564,7 @@ F4 - 手动完成
         
     def on_resolution_change(self, event=None):
         """分辨率改变"""
-        if self.vision_enabled.get():
+        if self.vision_enabled.get() and self.active_auto_backend == "vision":
             self.toggle_vision()
             self.toggle_vision()
             
