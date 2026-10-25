@@ -17,6 +17,16 @@ from auto_backend import AutoMonitorCoordinator
 from hud_window_state import HUDWindowState
 from live_client_timer import LiveClientTimer
 from window_overlay import set_clickthrough
+from hotkey_listener import HotkeyListener, MOD_ALT, MOD_CONTROL, VK_H, VK_J
+
+# 必须在创建 Tk 之前设置：否则 125% 缩放下 winfo_screenwidth 只有 2048，
+# 而分层窗口又按物理像素定位，算出来的“居中”会偏向左边。
+try:
+    import ctypes as _ctypes
+
+    _ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    pass
 
 # 视觉识别模块（可选）
 try:
@@ -252,6 +262,9 @@ class CampButton(tk.Canvas):
 
 class JungleTimer:
     """打野计时器主类 - 终极美化版"""
+
+    # 紧凑 HUD 的色键色：这个颜色在窗口里会被整块挖空（背景透明）
+    MINI_KEY_COLOR = "#010203"
     
     # 野怪营地配置
     CAMPS = {
@@ -291,9 +304,17 @@ class JungleTimer:
     
     def __init__(self):
         self.root = tk.Tk()
+        # 固定 Tk 的字体缩放：DPI 感知打开后 scaling 会变成 1.67，
+        # 700x360 的固定布局会放不下，这里锁回设计时的 4/3。
+        try:
+            self.root.tk.call('tk', 'scaling', 1.3333333333333333)
+        except tk.TclError:
+            pass
         self.root.title("LOL Jungle Timer Pro")
         self.root.geometry("700x360+40+40")
         self.root.minsize(700, 360)
+        # 物理分辨率（DPI 感知已在导入时打开），供视觉识别默认值使用
+        self.screen_size = (self.root.winfo_screenwidth(), self.root.winfo_screenheight())
         self.root.configure(bg="#05070A")
 
         # 主题色
@@ -323,11 +344,20 @@ class JungleTimer:
         self.route_options = {route["name"]: key for key, route in self.ROUTES.items()}
         self.camp_times = {}
         self.details_visible = False
+        layout = self.load_layout()
+        compact_size = (190, 58)
+        if layout["x"] is None:
+            # 默认停顶部中间；拖过之后就用记下来的位置
+            start_position = (max(0, (self.root.winfo_screenwidth() - compact_size[0]) // 2), 8)
+        else:
+            start_position = (layout["x"], layout["y"])
         self.hud_window_state = HUDWindowState(
             full_size=(700, 360),
-            compact_size=(340, 112),
-            position=(40, 40),
+            compact_size=compact_size,
+            position=start_position,
         )
+        # 启动即迷你计时条；完整 HUD 用 Ctrl+Alt+J 调出来
+        self.hud_window_state.enter_auto_run_mode()
         
         # 历史记录
         self.history_file = os.path.join(os.path.dirname(__file__), "history.json")
@@ -339,6 +369,23 @@ class JungleTimer:
         self.root.after(0, self.finalize_initial_window)
         self.update_timer()
         self.bind_shortcuts()
+        self.init_hotkeys()
+        if not (getattr(self, "hotkey_listener", None) and self.hotkey_listener.registered):
+            # 没有全局热键就别锁死点击，否则迷你条展不开
+            set_clickthrough(self.root, False)
+        if self.load_layout().get("auto", True):
+            # 上次开着自动监控：启动后自动接上（延后到 mainloop 跑起来再启动，
+            # 避免轮询线程在 mainloop 之前调用 root.after）
+            self.root.after(400, self.auto_start_from_layout)
+
+    def auto_start_from_layout(self):
+        """按上次的设置自动开启监控（默认开）"""
+        try:
+            if not self.vision_enabled.get():
+                self.vision_enabled.set(True)
+            self.toggle_vision()
+        except Exception as exc:
+            print(f"自动监控启动失败: {exc}")
         
     def create_styles(self):
         """创建自定义样式"""
@@ -396,6 +443,12 @@ class JungleTimer:
         """应用当前窗口模式与点击穿透状态"""
         self.apply_hud_visibility()
         self.root.update_idletasks()
+        self.apply_window_frame()
+        # minsize 会顶住窗口尺寸，紧凑 HUD 必须先把最小尺寸放开
+        if self.hud_window_state.mode == "compact":
+            self.root.minsize(*self.hud_window_state.compact_size)
+        else:
+            self.root.minsize(*self.hud_window_state.full_size)
         if self.details_visible and self.hud_window_state.mode == "full":
             width = max(self.root.winfo_reqwidth(), self.hud_window_state.full_size[0])
             height = self.root.winfo_reqheight()
@@ -403,7 +456,39 @@ class JungleTimer:
             self.root.geometry(f"{width}x{height}+{x}+{y}")
         else:
             self.root.geometry(self.hud_window_state.current_geometry())
+        self.apply_compact_alpha()
+
+    def apply_compact_alpha(self):
+        """迷你条按状态调透明度：待机几乎透明，开跑后清楚一点"""
+        try:
+            if self.hud_window_state.mode == "compact":
+                self.root.attributes("-alpha", 0.88 if self.is_running else 0.38)
+            else:
+                self.root.attributes("-alpha", 0.9)
+        except tk.TclError:
+            pass
         set_clickthrough(self.root, self.hud_window_state.clickthrough)
+
+    def apply_window_frame(self):
+        """紧凑模式做成真正的 HUD 条：无标题栏 + 抠掉底色，只留数字"""
+        compact = self.hud_window_state.mode == "compact"
+        if getattr(self, "_compact_frame", None) == compact:
+            return
+        self._compact_frame = compact
+        self.root.withdraw()
+        self.root.overrideredirect(compact)
+        self.root.deiconify()
+        try:
+            if compact:
+                # 用色键把背景整块挖空，屏幕上只剩计时数字，不再有深色底板
+                self.root.attributes("-transparentcolor", self.MINI_KEY_COLOR)
+                self.root.attributes("-alpha", 0.82)
+            else:
+                self.root.attributes("-alpha", 0.9)
+                self.root.attributes("-transparentcolor", "")
+            self.root.attributes("-topmost", True)
+        except tk.TclError:
+            pass
 
     def apply_hud_visibility(self):
         """根据 HUD 模式显示或隐藏组件"""
@@ -418,10 +503,28 @@ class JungleTimer:
                 self.vision_frame.pack_forget()
             if self.route_badge.winfo_manager():
                 self.route_badge.pack_forget()
-            self.route_badge.config(font=("Arial", 8, "bold"))
-            self.timer_label.config(font=("Arial", 36, "bold"))
+            if self.info_row.winfo_manager():
+                self.info_row.pack_forget()
+            self.main_frame.pack_configure(padx=2, pady=2)
+            self.timer_card.pack_configure(pady=(0, 0))
+            self.timer_inner.pack_configure(padx=2, pady=2)
+            # 迷你模式改由 Canvas 画带黑描边的数字
+            if self.timer_label.winfo_manager():
+                self.timer_label.pack_forget()
+            for widget in (self.main_frame, self.timer_card, self.timer_inner):
+                widget.config(bg=self.MINI_KEY_COLOR)
+            self.mini_canvas.config(bg=self.MINI_KEY_COLOR)
+            if not self.mini_canvas.winfo_manager():
+                self.mini_canvas.pack()
+            self.draw_mini_timer()
+            self.root.configure(bg=self.MINI_KEY_COLOR)
             self.backend_label.pack_forget()
         else:
+            # 先把计时标签放回 pack，route_badge 的 before= 依赖它已被管理
+            if self.mini_canvas.winfo_manager():
+                self.mini_canvas.pack_forget()
+            if not self.timer_label.winfo_manager():
+                self.timer_label.pack(anchor="w", pady=(2, 8))
             if not self.header_frame.winfo_manager():
                 self.header_frame.pack(fill=tk.X, pady=(0, 10), before=self.timer_card)
             if not self.control_frame.winfo_manager():
@@ -430,15 +533,27 @@ class JungleTimer:
                 self.vision_frame.pack(fill=tk.X, pady=(6, 0))
             if not self.route_badge.winfo_manager():
                 self.route_badge.pack(anchor="w", before=self.timer_label)
+            if not self.info_row.winfo_manager():
+                self.info_row.pack(fill=tk.X)
             if not self.backend_label.winfo_manager():
                 self.backend_label.pack(side=tk.RIGHT)
+            self.main_frame.pack_configure(padx=14, pady=14)
+            self.timer_card.pack_configure(pady=(0, 10))
+            self.timer_inner.pack_configure(padx=18, pady=16)
+            self.timer_label.pack_configure(pady=(2, 8))
             self.route_badge.config(font=("Arial", 9, "bold"))
             self.timer_label.config(font=("Arial", 42, "bold"))
+            self.main_frame.config(bg=self.colors["bg"])
+            self.timer_card.config(bg=self.colors["card"])
+            self.timer_inner.config(bg=self.colors["card"])
+            self.timer_label.config(bg=self.colors["card"])
+            self.root.configure(bg=self.colors["bg"])
 
     def bind_drag_region(self, widget):
         """让 HUD 区域支持拖动窗口"""
         widget.bind("<ButtonPress-1>", self.start_drag)
         widget.bind("<B1-Motion>", self.drag_window)
+        widget.bind("<ButtonRelease-1>", lambda e: self.save_layout_position())
 
     def start_drag(self, event):
         """开始拖动 HUD 窗口"""
@@ -496,7 +611,7 @@ class JungleTimer:
 
         self.header_meta = tk.Label(
             title_frame,
-            text="LEAGUE PRACTICE OVERLAY",
+            text="CTRL+ALT+J 迷你计时条 · CTRL+ALT+H 隐藏",
             font=("Arial", 9),
             bg=self.colors["panel"],
             fg=self.colors["text_secondary"]
@@ -544,6 +659,7 @@ class JungleTimer:
 
         inner = tk.Frame(self.timer_card, bg=self.colors["card"])
         inner.pack(fill=tk.X, padx=18, pady=16)
+        self.timer_inner = inner
 
         self.route_badge = tk.Label(
             inner,
@@ -562,6 +678,23 @@ class JungleTimer:
             fg=self.colors["gold_light"]
         )
         self.timer_label.pack(anchor="w", pady=(2, 8))
+        # 双击计时数字切换紧凑/完整 HUD（紧凑条也能靠它拖到不挡视野的位置）
+        self.timer_label.bind("<Double-Button-1>", lambda e: self.toggle_mini_hud())
+        self.bind_drag_region(self.timer_label)
+
+        # 迷你模式专用画布：同一串数字画两遍，黑色描边 + 白色主体，亮背景也看得清
+        self.mini_canvas = tk.Canvas(
+            inner,
+            width=178,
+            height=50,
+            bg=self.MINI_KEY_COLOR,
+            highlightthickness=0,
+            bd=0
+        )
+        self.mini_canvas.bind("<Double-Button-1>", lambda e: self.toggle_mini_hud())
+        self.bind_drag_region(self.mini_canvas)
+        self._mini_timer_text = "00:00.00"
+        self._mini_timer_color = self.colors["gold_light"]
 
         self.info_row = tk.Frame(inner, bg=self.colors["card"])
         self.info_row.pack(fill=tk.X)
@@ -660,7 +793,7 @@ class JungleTimer:
             fg=self.colors["text_secondary"]
         ).pack(side=tk.LEFT)
 
-        self.resolution_var = tk.StringVar(value="1920x1080")
+        self.resolution_var = tk.StringVar(value=self.default_resolution_label())
         self.res_menu = ttk.Combobox(
             right_frame,
             textvariable=self.resolution_var,
@@ -683,6 +816,8 @@ class JungleTimer:
         self.init_live_client_timer()
         self.init_vision_timer()
         self.init_auto_monitor()
+        # 按当前屏幕把视觉识别区域一次设好（下拉框默认值已跟随屏幕）
+        self.apply_resolution()
 
     def create_hud_controls(self, parent):
         """创建 HUD 控制条"""
@@ -1009,7 +1144,8 @@ class JungleTimer:
             
             self.status_label.config(text="计时中...", fg=self.colors["green"])
             self.status_dot.itemconfig(1, fill=self.colors["green"])
-            
+            self.apply_compact_alpha()
+
     def pause_timer(self):
         """暂停计时"""
         if self.is_running:
@@ -1021,6 +1157,7 @@ class JungleTimer:
             
             self.status_label.config(text="已暂停", fg=self.colors["orange"])
             self.status_dot.itemconfig(1, fill=self.colors["orange"])
+            self.apply_compact_alpha()
             
     def reset_timer(self):
         """重置计时器"""
@@ -1028,9 +1165,9 @@ class JungleTimer:
         self.start_time = None
         self.pause_time = None
         self.camp_times = {}
-        self.restore_full_hud()
+        self.apply_compact_alpha()
         
-        self.timer_label.config(text="00:00.00", fg=self.colors["gold"])
+        self.set_timer_display("00:00.00", self.colors["gold"])
         self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
         self.status_dot.itemconfig(1, fill=self.colors["border"])
         if hasattr(self, "route_badge"):
@@ -1045,6 +1182,30 @@ class JungleTimer:
             
         self.update_stats()
         
+    def set_timer_display(self, text, color=None):
+        """统一更新计时数字：完整模式用标签，迷你模式用带黑描边的画布"""
+        color = color or self.colors["gold_light"]
+        self.timer_label.config(text=text, fg=color)
+        self._mini_timer_text = text
+        self._mini_timer_color = color
+        if self.hud_window_state.mode == "compact":
+            self.draw_mini_timer()
+
+    def draw_mini_timer(self):
+        """在迷你画布上先画黑色描边、再画主体数字"""
+        cv = getattr(self, "mini_canvas", None)
+        if cv is None:
+            return
+        cv.delete("all")
+        font = ("Arial", 21, "bold")
+        cx, cy = 89, 25
+        offsets = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1))
+        for dx, dy in offsets:
+            cv.create_text(cx + dx, cy + dy, text=self._mini_timer_text,
+                           font=font, fill="#000000", anchor="center")
+        cv.create_text(cx, cy, text=self._mini_timer_text,
+                       font=font, fill=self._mini_timer_color, anchor="center")
+
     def update_timer(self):
         """更新计时器显示"""
         if self.is_running and self.start_time:
@@ -1061,10 +1222,7 @@ class JungleTimer:
             else:
                 color = self.colors["gold"]
                 
-            self.timer_label.config(
-                text=f"{minutes:02d}:{seconds:02d}.{milliseconds:02d}",
-                fg=color
-            )
+            self.set_timer_display(f"{minutes:02d}:{seconds:02d}.{milliseconds:02d}", color)
             
         self.root.after(50, self.update_timer)
         
@@ -1136,9 +1294,9 @@ class JungleTimer:
     def complete_run(self):
         """完成一轮打野"""
         if self.is_running:
-            self.restore_full_hud()
             total_time = time.time() - self.start_time
             self.is_running = False
+            self.apply_compact_alpha()
             
             self.play_completion_sound()
             
@@ -1150,13 +1308,28 @@ class JungleTimer:
             }
             self.history.append(record)
             self.save_history()
-            
-            self.show_completion_dialog(record, total_time)
+
+            if self.hud_window_state.mode == "compact":
+                # 迷你模式下不弹窗，直接在计时条上闪一下成绩，避免打断游戏
+                self.flash_compact_result(total_time)
+            else:
+                self.show_completion_dialog(record, total_time)
             
             self.start_btn.set_state("normal")
             self.start_btn.set_text("▶ 开始")
             self.pause_btn.set_state("disabled")
             self.status_label.config(text="已完成", fg=self.colors["gold"])
+
+    def flash_compact_result(self, total_time):
+        """紧凑模式：在计时条上短暂显示本轮用时，不弹任何窗口"""
+        result_text = f"✓ {self.format_time(total_time)}"
+        self.set_timer_display(result_text, self.colors["green"])
+
+        def restore():
+            if not self.is_running:
+                self.set_timer_display("00:00.00", self.colors["gold_light"])
+
+        self.root.after(4000, restore)
             
     def play_completion_sound(self):
         """播放完成提示音"""
@@ -1246,7 +1419,43 @@ class JungleTimer:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存失败: {e}")
-            
+
+    def layout_file_path(self) -> str:
+        return os.path.join(os.path.dirname(__file__), "hud_layout.json")
+
+    def load_layout(self) -> dict:
+        """读取上次的位置与自动监控开关（没存过位置时 x/y 返回 None）"""
+        layout = {"x": None, "y": None, "auto": True}
+        try:
+            with open(self.layout_file_path(), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if "x" in data and "y" in data:
+                layout["x"] = int(data["x"])
+                layout["y"] = int(data["y"])
+            if "auto" in data:
+                layout["auto"] = bool(data["auto"])
+        except Exception:
+            pass
+        return layout
+
+    def load_layout_position(self):
+        """读取上次摆放的位置，让计时条每次都停在顺手的地方"""
+        layout = self.load_layout()
+        return (layout["x"], layout["y"])
+
+    def save_layout_position(self):
+        """记住当前窗口位置和自动监控开关"""
+        try:
+            x, y = self.hud_window_state.position
+            try:
+                auto = bool(self.vision_enabled.get())
+            except Exception:
+                auto = True
+            with open(self.layout_file_path(), 'w', encoding='utf-8') as f:
+                json.dump({"x": int(x), "y": int(y), "auto": auto}, f)
+        except Exception:
+            pass
+
     def show_history(self):
         """显示历史记录窗口"""
         history_window = tk.Toplevel(self.root)
@@ -1621,12 +1830,15 @@ F4 - 手动完成
                 fg=self.colors["blue"]
             )
             self.status_dot.itemconfig(1, fill=self.colors["blue"])
+            # 开启自动监控后立刻收成计时条，避免完整 HUD 长时间遮挡视野
+            self.enter_compact_hud()
         else:
             self.stop_auto_monitoring()
             self.vision_status.config(text="[未启用]", fg=self.colors["text_secondary"])
             if not self.is_running:
                 self.status_label.config(text="准备就绪", fg=self.colors["text_secondary"])
                 self.status_dot.itemconfig(1, fill=self.colors["border"])
+        self.save_layout_position()
 
     def enter_compact_hud(self):
         """进入自动开跑后的紧凑计时 HUD"""
@@ -1637,15 +1849,69 @@ F4 - 手动完成
             self.details_btn.set_text("DETAILS")
         self.hud_window_state.enter_auto_run_mode()
         self.apply_window_mode()
+        if not (getattr(self, "hotkey_listener", None) and self.hotkey_listener.registered):
+            # 全局热键不可用时保持可点击，避免收成迷你条后无法展开
+            set_clickthrough(self.root, False)
 
     def restore_full_hud(self):
         """恢复完整可交互 HUD"""
         self.sync_window_position()
         self.hud_window_state.restore_full_mode()
         self.apply_window_mode()
-                
-    def apply_resolution(self):
-        """应用分辨率设置"""
+
+    def toggle_mini_hud(self):
+        """在紧凑计时条与完整 HUD 之间切换"""
+        if self.hud_window_state.mode == "compact":
+            self.restore_full_hud()
+        else:
+            self.enter_compact_hud()
+
+    def init_hotkeys(self):
+        """注册全局热键（游戏在前台时 Tk 的 bind 收不到按键）"""
+        self.hotkey_listener = HotkeyListener()
+        enabled = self.hotkey_listener.start({
+            "toggle_mini": (MOD_CONTROL | MOD_ALT, VK_J),
+            "toggle_visible": (MOD_CONTROL | MOD_ALT, VK_H),
+        })
+        if enabled:
+            print("[Hotkey] Ctrl+Alt+J 切换完整/紧凑 HUD，Ctrl+Alt+H 隐藏/显示")
+            self.root.after(120, self.poll_hotkeys)
+
+    def poll_hotkeys(self):
+        """轮询全局热键事件并派发"""
+        try:
+            for action in self.hotkey_listener.poll():
+                if action == "toggle_mini":
+                    self.toggle_mini_hud()
+                elif action == "toggle_visible":
+                    self.toggle_hud_visible()
+        finally:
+            self.root.after(120, self.poll_hotkeys)
+
+    def toggle_hud_visible(self):
+        """隐藏 / 显示整个 HUD（隐藏时不占屏幕也不吃点击）"""
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+            set_clickthrough(self.root, self.hud_window_state.clickthrough)
+        else:
+            self.root.withdraw()
+
+    def default_resolution_label(self) -> str:
+        """按当前屏幕挑一个预设分辨率，非标屏就落到“其他”"""
+        width, height = self.screen_size
+        for label in ("1920x1080", "2560x1440", "3840x2160"):
+            preset_w, preset_h = (int(v) for v in label.split("x"))
+            if (width, height) == (preset_w, preset_h):
+                return label
+        return "其他"
+
+    def apply_resolution(self, interactive: bool = False):
+        """应用分辨率设置
+
+        interactive=False 时（启动/自动开启监控）选“其他”不会弹窗，
+        直接用当前屏幕分辨率，避免一启动就弹对话框。
+        """
         if self.vision_timer is None:
             return
             
@@ -1657,7 +1923,10 @@ F4 - 手动完成
         elif res == "3840x2160":
             self.vision_timer.set_resolution(3840, 2160)
         elif res == "其他":
-            self.ask_custom_resolution()
+            if interactive:
+                self.ask_custom_resolution()
+            else:
+                self.vision_timer.set_resolution(*self.screen_size)
             
     def ask_custom_resolution(self):
         """询问自定义分辨率"""
@@ -1701,6 +1970,7 @@ F4 - 手动完成
         
     def on_resolution_change(self, event=None):
         """分辨率改变"""
+        self.apply_resolution(interactive=True)
         if self.vision_enabled.get() and self.active_auto_backend == "vision":
             self.toggle_vision()
             self.toggle_vision()

@@ -158,7 +158,13 @@ class LiveClientTimer:
             self.end_detected = False
             print("[LiveClient] 检测到新的一局，已重置监控状态")
 
-        if not self.start_detected and state.game_time >= self.target_time_seconds:
+        # 只在 0:55 附近两分钟内触发开始：中途才打开程序时不该直接开表
+        if (
+            not self.start_detected
+            and self.target_time_seconds
+            <= state.game_time
+            <= self.target_time_seconds + 120
+        ):
             self.start_detected = True
             print(f"[LiveClient] 检测到目标时间: {state.game_time:.2f}s")
             if self.start_callback:

@@ -10,6 +10,7 @@ dist/
 # Runtime/data artifacts
 debug_*.png
 export_*.json
+hud_layout.json
 
 # Local tooling
 .superpowers/
